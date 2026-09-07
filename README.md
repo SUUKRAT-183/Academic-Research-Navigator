@@ -19,6 +19,8 @@ Research Navigator is a web-based academic research discovery system designed fo
 
 Instead of forcing users to navigate through a traditional catalogue using exact keywords, the system provides a more intuitive research experience through **concept exploration, topic-based discovery, relevance-ranked results, resource previews, and direct catalogue access**.
 
+> ⚠️ **Prototype Data Status:** The current prototype uses a **6,398-record general book catalogue dataset** from `data/catalogue.json`. It is not yet populated with a dedicated academic-paper dataset. Concept discovery is currently based on **genre-oriented catalogue tags**, so some research-area searches may not produce meaningful concept matches until the production library dataset is integrated.
+
 <br>
 
 ## ✨ Overview
@@ -39,6 +41,8 @@ Users can:
 - 💡 Explore resources without needing to know the exact catalogue terminology
 
 The interface combines a **research-focused visual design** with a lightweight discovery workflow inspired by modern content platforms.
+
+The research-area and concept-discovery experience is currently a **prototype layer** intended to demonstrate how the interface can work with a richer academic library dataset.
 
 <div align="right"><a href="#-research-navigator">⬆ back to top</a></div>
 
@@ -98,6 +102,8 @@ The homepage provides topic-based discovery through research areas such as:
 - Management
 
 Each research area contains smaller discovery cards that can directly launch a search.
+
+> **Prototype note:** These research areas represent the intended discovery experience. The current catalogue data is based on general book genres rather than academic subject classifications, so these searches may not correspond directly to the current concept vocabulary.
 
 </details>
 
@@ -262,7 +268,7 @@ The project follows a frontend/backend architecture.
 
 ```text
 ┌──────────────────────────────┐
-│          User                │
+│            User              │
 └──────────────┬───────────────┘
                │
                ▼
@@ -280,32 +286,23 @@ The project follows a frontend/backend architecture.
                │ HTTP API
                ▼
 ┌──────────────────────────────┐
-│          Backend             │
-│       127.0.0.1:8000        │
+│           Backend            │
+│        127.0.0.1:8000       │
 │                              │
+│  /api/health                 │
 │  /api/search                 │
+│  /api/concepts               │
 │  /api/concept/{concept}      │
+│  /api/resource/{id}          │
+│  /api/resource/{id}/view     │
 └──────────────┬───────────────┘
                │
                ▼
 ┌──────────────────────────────┐
-│     Academic Resource Data   │
+│      Library Resource Data   │
 │                              │
 │  Books                       │
-│  Papers                      │
-│  Library Resources           │
+│  Catalogue Records           │
+│  Genre Tags                  │
 │  Metadata                    │
 └──────────────────────────────┘
-```
-
-</details>
-
-<div align="right"><a href="#-research-navigator">⬆ back to top</a></div>
-
----
-
-<div align="center">
-
-*Built for the Central Library, Thapar Institute of Engineering & Technology (TIET)*
-
-</div>
