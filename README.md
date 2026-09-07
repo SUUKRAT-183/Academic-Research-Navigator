@@ -263,46 +263,5 @@ The project uses three primary typefaces:
 
 The project follows a frontend/backend architecture.
 
-<details open>
-<summary><b>View architecture diagram</b></summary>
+<img width="1024" height="1536" alt="image" src="https://github.com/user-attachments/assets/9abea7be-f146-4379-9e75-4dabddc2eafe" />
 
-```text
-┌──────────────────────────────┐
-│            User              │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│      Research Navigator      │
-│          Frontend            │
-│                              │
-│  Search                      │
-│  Research Areas              │
-│  Result Cards                │
-│  Hover Preview               │
-│  Resource Modal              │
-└──────────────┬───────────────┘
-               │
-               │ HTTP API
-               ▼
-┌──────────────────────────────┐
-│           Backend            │
-│        127.0.0.1:8000       │
-│                              │
-│  /api/health                 │
-│  /api/search                 │
-│  /api/concepts               │
-│  /api/concept/{concept}      │
-│  /api/resource/{id}          │
-│  /api/resource/{id}/view     │
-└──────────────┬───────────────┘
-               │
-               ▼
-┌──────────────────────────────┐
-│      Library Resource Data   │
-│                              │
-│  Books                       │
-│  Catalogue Records           │
-│  Genre Tags                  │
-│  Metadata                    │
-└──────────────────────────────┘
