@@ -1,10 +1,10 @@
 <div align="center">
 
-# 📚 Research Navigator
+# 📚 Academic Research Navigator
 
 ### *A modern academic discovery interface for exploring library resources beyond traditional catalogue search.*
 
-Research Navigator is a web-based academic research discovery system designed for the **Central Library, Thapar Institute of Engineering & Technology (TIET)**.
+Academic Research Navigator is a web-based academic research discovery system designed for the **Central Library, Thapar Institute of Engineering & Technology (TIET)**.
 
 ![Python](https://img.shields.io/badge/Backend-FastAPI-009688?style=for-the-badge&logo=fastapi&logoColor=white)
 ![JavaScript](https://img.shields.io/badge/Frontend-JavaScript-F7DF1E?style=for-the-badge&logo=javascript&logoColor=black)
@@ -27,7 +27,7 @@ Instead of forcing users to navigate through a traditional catalogue using exact
 
 Academic research often begins with an idea rather than a specific book, paper, or keyword.
 
-Research Navigator is designed around that workflow.
+Academic Research Navigator is designed around that workflow.
 
 Users can:
 
@@ -62,7 +62,7 @@ Research, however, often starts with:
 
 This creates a gap between **research intent** and **catalogue search**.
 
-Research Navigator attempts to bridge that gap by introducing a discovery layer on top of library resources.
+Academic Research Navigator attempts to bridge that gap by introducing a discovery layer on top of library resources.
 
 Instead of treating the catalogue as the entire research experience, the system provides an interface for:
 
@@ -225,7 +225,7 @@ The interface adapts to smaller screen sizes through responsive layouts for:
 
 ## 🎨 Design Philosophy
 
-Research Navigator intentionally avoids the appearance of a conventional catalogue interface.
+Academic Research Navigator intentionally avoids the appearance of a conventional catalogue interface.
 
 The design uses a dark research-oriented visual system with:
 
@@ -262,6 +262,6 @@ The project uses three primary typefaces:
 ## 🏗️ System Architecture
 
 The project follows a frontend/backend architecture.
-
-<img width="1024" height="1536" alt="image" src="https://github.com/user-attachments/assets/9abea7be-f146-4379-9e75-4dabddc2eafe" />
+<div align="center">
+<img width="682" height="1024" alt="Academic Academic Research Navigator System Architecture" src="https://github.com/user-attachments/assets/9abea7be-f146-4379-9e75-4dabddc2eafe" />
 
