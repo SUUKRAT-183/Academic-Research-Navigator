@@ -2,3 +2,7 @@ fastapi>=0.110
 uvicorn[standard]>=0.29
 scikit-learn>=1.4
 pydantic>=2.7
+sqlalchemy>=2.0
+psycopg[binary]>=3.2
+# only needed for scripts/import_library_data.py when the library sends .xlsx
+openpyxl>=3.1

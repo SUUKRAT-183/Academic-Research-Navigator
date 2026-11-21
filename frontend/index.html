@@ -3100,6 +3100,23 @@
                 </section>
 
 
+                <!-- Feedback -->
+
+                <section class="modal-section">
+
+                    <div class="modal-section-title">
+                        Was this result helpful?
+                    </div>
+
+                    <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap;">
+                        <button id="fbUp" class="action-button" onclick="sendFeedback(true)">👍 Yes</button>
+                        <button id="fbDown" class="action-button" onclick="sendFeedback(false)">👎 No</button>
+                        <span id="fbThanks" style="display:none; font-size:14px;">Thanks for your feedback!</span>
+                    </div>
+
+                </section>
+
+
             </div>
 
         </div>
@@ -3116,9 +3133,70 @@
 
         Academic Research Navigator · Central Library · TIET
 
+        <div style="margin-top:8px; font-size:12px; opacity:.7;">
+            We record anonymous usage statistics (searches and clicks, no personal information)
+            to improve this service.
+        </div>
+
     </footer>
 
 
+
+    <!-- =========================================================
+         ANONYMOUS USAGE TRACKING (see backend/analytics.py)
+         No names, emails or IPs. Just a random id kept in this browser.
+    ========================================================== -->
+    <script>
+        const ARNTrack = (() => {
+            function randomId() {
+                const a = new Uint8Array(16);
+                crypto.getRandomValues(a);
+                return Array.from(a, b => b.toString(16).padStart(2, "0")).join("");
+            }
+            function stored(store, key) {
+                try {
+                    let v = store.getItem(key);
+                    if (!v) { v = randomId(); store.setItem(key, v); }
+                    return v;
+                } catch (e) { return randomId(); }   /* storage blocked: still works, just not persistent */
+            }
+            const visitorId = stored(window.localStorage, "arn_vid");
+            const sessionId = stored(window.sessionStorage, "arn_sid");
+
+            function headers(extra) {
+                return Object.assign({
+                    "X-Visitor-Id": visitorId,
+                    "X-Session-Id": sessionId
+                }, extra || {});
+            }
+
+            function send(event, data) {
+                try {
+                    const body = JSON.stringify(Object.assign({
+                        event: event,
+                        visitor_id: visitorId,
+                        session_id: sessionId
+                    }, data || {}));
+                    fetch("/api/track", {
+                        method: "POST",
+                        headers: { "Content-Type": "application/json" },
+                        body: body,
+                        keepalive: true
+                    }).catch(() => {});
+                } catch (e) { /* tracking must never break the page */ }
+            }
+
+            /* one "visit" per browser-tab session */
+            try {
+                if (!sessionStorage.getItem("arn_visit_sent")) {
+                    sessionStorage.setItem("arn_visit_sent", "1");
+                    send("visit");
+                }
+            } catch (e) { send("visit"); }
+
+            return { headers, send };
+        })();
+    </script>
 
     <script>
         /* =========================================================
@@ -3283,8 +3361,9 @@
            API
         ========================================================== */
 
-        const API =
-            "http://127.0.0.1:8000";
+        /* Same origin: the backend serves this page, so no host is needed.
+           (If you ever host the frontend separately, put the backend URL here.) */
+        const API = "";
 
 
         /* =========================================================
@@ -3614,10 +3693,10 @@
                         {
                             method: "POST",
 
-                            headers: {
+                            headers: ARNTrack.headers({
                                 "Content-Type":
                                     "application/json"
-                            },
+                            }),
 
                             body: JSON.stringify({
                                 query: query
@@ -3709,7 +3788,7 @@
 
                 showMessage(
                     "Could not reach the research service",
-                    "Make sure the backend is running at http://127.0.0.1:8000 and try again."
+                    "Please check your connection and try again in a moment."
                 );
 
             }
@@ -3749,7 +3828,8 @@
 
                 const response =
                     await fetch(
-                        `${API}/api/concept/${encodeURIComponent(concept)}`
+                        `${API}/api/concept/${encodeURIComponent(concept)}`,
+                        { headers: ARNTrack.headers() }
                     );
 
 
@@ -5096,8 +5176,13 @@
 
 
                 catalogue.onclick =
-                    event =>
+                    event => {
                         event.stopPropagation();
+                        ARNTrack.send("click_catalogue", {
+                            target: String(resource.identifier || ""),
+                            query: currentQuery
+                        });
+                    };
 
 
                 actions.appendChild(
@@ -5144,8 +5229,13 @@
 
 
                 openResource.onclick =
-                    event =>
+                    event => {
                         event.stopPropagation();
+                        ARNTrack.send("click_link", {
+                            target: String(resource.identifier || ""),
+                            query: currentQuery
+                        });
+                    };
 
 
                 actions.appendChild(
@@ -5263,9 +5353,18 @@
            RESOURCE MODAL
         ========================================================== */
 
+        let currentModalResource = null;
+
         function openResourceModal(
             resource
         ) {
+
+            currentModalResource = resource;
+            ARNTrack.send("click_result", {
+                target: String(resource.identifier || ""),
+                query: currentQuery
+            });
+            resetFeedback();
 
             document.getElementById(
                 "modalTitle"
@@ -5693,11 +5792,42 @@
             link.textContent =
                 `${text} ↗`;
 
+            link.addEventListener("click", () => {
+                if (currentModalResource) {
+                    ARNTrack.send("click_link", {
+                        target: String(currentModalResource.identifier || ""),
+                        query: currentQuery
+                    });
+                }
+            });
+
 
             container.appendChild(
                 link
             );
 
+        }
+
+
+        function resetFeedback() {
+            const up = document.getElementById("fbUp");
+            const down = document.getElementById("fbDown");
+            const thanks = document.getElementById("fbThanks");
+            if (!up) return;
+            up.style.display = "";
+            down.style.display = "";
+            thanks.style.display = "none";
+        }
+
+        function sendFeedback(isHelpful) {
+            if (!currentModalResource) return;
+            ARNTrack.send(isHelpful ? "feedback_up" : "feedback_down", {
+                target: String(currentModalResource.identifier || ""),
+                query: currentQuery
+            });
+            document.getElementById("fbUp").style.display = "none";
+            document.getElementById("fbDown").style.display = "none";
+            document.getElementById("fbThanks").style.display = "inline";
         }
 
 

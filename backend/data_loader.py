@@ -12,7 +12,9 @@ import json
 import os
 from .concepts import concepts_for_text
 
-DATA_PATH = os.path.join(
+# The catalogue file the site serves. To use a different file without touching
+# code, set the ARN_CATALOGUE_PATH environment variable.
+DATA_PATH = os.environ.get("ARN_CATALOGUE_PATH") or os.path.join(
     os.path.dirname(__file__),
     "..",
     "data",
