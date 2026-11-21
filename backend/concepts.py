@@ -14,6 +14,8 @@ only this file needs to change - retrieval.py and relationships.py don't
 know or care HOW concepts were identified, only what the result looks like.
 """
 
+import json
+import os
 import re
 from typing import List
 
@@ -94,6 +96,53 @@ ALIASES = {
 }
 
 
+# ---------------------------------------------------------------------------
+# Vocabulary generated from YOUR catalogue (see scripts/build_vocabulary.py).
+# If data/vocabulary.json exists it replaces the hand-picked lists above, so
+# the concept layer always matches the data that is actually loaded.
+# ---------------------------------------------------------------------------
+VOCABULARY_PATH = os.environ.get("ARN_VOCABULARY_PATH") or os.path.join(
+    os.path.dirname(__file__), "..", "data", "vocabulary.json"
+)
+
+
+def _auto_aliases(terms):
+    """Users type "and", catalogues use "&": add the "and" form of every "X & Y" term."""
+    return {t.replace(" & ", " and "): t for t in terms if " & " in t}
+
+
+def _load_vocabulary_file():
+    global CONTROLLED_VOCABULARY, ALIASES
+    if not os.path.exists(VOCABULARY_PATH):
+        return
+    with open(VOCABULARY_PATH, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    terms = [t.strip().lower() for t in data.get("terms", []) if t and t.strip()]
+    # NOTE: if the file exists we ALWAYS use it, even if it is empty. Silently falling
+    # back to the old hand-typed (Kaggle) list would tag library books with wrong concepts.
+    CONTROLLED_VOCABULARY = sorted(set(terms))
+    aliases = _auto_aliases(CONTROLLED_VOCABULARY)
+    # optional hand-written extras: {"aliases": {"ml": "machine learning"}}
+    for alias, canonical in (data.get("aliases") or {}).items():
+        if canonical.lower() in CONTROLLED_VOCABULARY:
+            aliases[alias.lower()] = canonical.lower()
+    ALIASES = aliases
+
+
+_load_vocabulary_file()
+
+
+def _whole_word(phrase: str):
+    """Match the phrase only as whole word(s), so "art" does not fire inside
+    "start" and "law" does not fire inside "lawn"."""
+    return re.compile(r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])")
+
+
+_VOCAB_PATTERNS = [(t, _whole_word(t)) for t in
+                   sorted(CONTROLLED_VOCABULARY, key=len, reverse=True)]
+_ALIAS_PATTERNS = [(c, _whole_word(a)) for a, c in ALIASES.items()]
+
+
 def _normalize(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower().strip())
 
@@ -110,15 +159,14 @@ def extract_concepts(query: str) -> List[str]:
     q = _normalize(query)
     found = set()
 
-    # direct vocabulary phrase matches (longest phrases first, so
-    # "graph neural networks" wins over just "graph" or "networks")
-    for term in sorted(CONTROLLED_VOCABULARY, key=len, reverse=True):
-        if term in q:
+    # direct vocabulary phrase matches, as whole words/phrases
+    for term, pattern in _VOCAB_PATTERNS:
+        if pattern.search(q):
             found.add(term)
 
-    # alias matches
-    for alias, canonical in ALIASES.items():
-        if re.search(r"\b" + re.escape(alias) + r"\b", q):
+    # alias matches (e.g. "sci-fi" -> "science fiction")
+    for canonical, pattern in _ALIAS_PATTERNS:
+        if pattern.search(q):
             found.add(canonical)
 
     return sorted(found)

@@ -1,0 +1,17 @@
+# One-click deploy blueprint for Render (https://render.com).
+# Push this project to GitHub, then Render -> New -> Blueprint -> pick the repo.
+services:
+  - type: web
+    name: arn
+    runtime: python
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.8
+      - key: ADMIN_PASSWORD      # password for /admin (user name can be anything)
+        sync: false
+      - key: DATABASE_URL        # Postgres URL from Neon/Supabase (keeps your stats safe)
+        sync: false

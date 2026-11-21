@@ -1,31 +1,55 @@
 """
-Academic Research Navigator - baseline prototype API.
+Academic Research Navigator - API + website.
 
 Maps to requirements doc (ARN_Requirements_v1.md):
   POST /api/search        -> FR-1, FR-2, FR-3, FR-4, FR-8, FR-9 (query -> ranked, explained results + concepts)
   GET  /api/concept/{c}    -> FR-5, FR-6 (explore a related concept)
   GET  /api/resource/{id}  -> FR-7 (resource detail view)
 
-Run with:  uvicorn backend.main:app --reload --app-dir /home/claude/arn_prototype
+Also serves the website itself at "/" so the whole thing deploys as ONE service,
+records anonymous usage events (see analytics.py) and exposes a password-protected
+dashboard at /admin.
+
+Run locally with:  uvicorn backend.main:app --reload
+then open http://127.0.0.1:8000
 """
 
-from fastapi import FastAPI, HTTPException, Query
-from fastapi.responses import HTMLResponse
 import html
+import os
+import secrets
+from pathlib import Path
+
+from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, Response
+from fastapi.security import HTTPBasic, HTTPBasicCredentials
 from pydantic import BaseModel
 
-from .data_loader import load_catalogue
-from .retrieval import Retriever
-from .relationships import RelationshipIndex
+from . import analytics
 from .concepts import extract_concepts
+from .data_loader import load_catalogue
 from .explain import explain_relevance
+from .relationships import RelationshipIndex
+from .retrieval import Retriever
 
-app = FastAPI(title="Academic Research Navigator - Prototype API")
+FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
+# Link to the real library record. Needs a "biblionumber" per resource in the data.
+# Change it with the ARN_OPAC_URL_TEMPLATE env var if the library's URL differs.
+OPAC_URL_TEMPLATE = os.environ.get(
+    "ARN_OPAC_URL_TEMPLATE",
+    "https://library.thapar.edu/cgi-bin/koha/opac-detail.pl?biblionumber={biblionumber}",
+)
+
+app = FastAPI(title="Academic Research Navigator")
+
+# The website is served from the same origin as the API, so CORS is only needed
+# if you host the frontend somewhere else. In production you can restrict it:
+#   ARN_ALLOWED_ORIGINS="https://arn.example.edu"
+_origins = [o.strip() for o in os.environ.get("ARN_ALLOWED_ORIGINS", "*").split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=_origins,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -35,6 +59,53 @@ RESOURCES, SOURCE_LABEL = load_catalogue()
 RETRIEVER = Retriever(RESOURCES)
 REL_INDEX = RelationshipIndex(RESOURCES)
 RESOURCES_BY_ID = {r["id"]: r for r in RESOURCES}
+
+analytics.init_db()
+
+# ---- basic abuse protection (per client IP, in memory) ----
+_search_limiter = analytics.RateLimiter(max_calls=40, window_seconds=60)
+_track_limiter = analytics.RateLimiter(max_calls=120, window_seconds=60)
+
+
+def _client_ip(request: Request) -> str:
+    fwd = request.headers.get("x-forwarded-for")
+    if fwd:
+        return fwd.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
+
+
+def limit_search(request: Request):
+    if not _search_limiter.allow(_client_ip(request)):
+        raise HTTPException(status_code=429, detail="Too many searches. Please wait a minute.")
+
+
+def limit_track(request: Request):
+    if not _track_limiter.allow(_client_ip(request)):
+        raise HTTPException(status_code=429, detail="Too many requests.")
+
+
+# ---- admin auth (HTTP Basic; password comes from the ADMIN_PASSWORD env var) ----
+_basic = HTTPBasic()
+
+
+def require_admin(credentials: HTTPBasicCredentials = Depends(_basic)):
+    expected = os.environ.get("ADMIN_PASSWORD")
+    if not expected:
+        raise HTTPException(status_code=503, detail="Admin is disabled. Set the ADMIN_PASSWORD environment variable.")
+    if not secrets.compare_digest(credentials.password.encode(), expected.encode()):
+        raise HTTPException(status_code=401, detail="Wrong password.",
+                            headers={"WWW-Authenticate": "Basic"})
+
+
+def _ids(request: Request):
+    """Anonymous ids sent by the browser as headers."""
+    return (request.headers.get("x-visitor-id"), request.headers.get("x-session-id"),
+            request.headers.get("user-agent"))
+
+
+@app.get("/", include_in_schema=False)
+def home():
+    return FileResponse(FRONTEND_DIR / "index.html")
 
 
 class SearchRequest(BaseModel):
@@ -56,9 +127,9 @@ def _serialize_result(item):
         "call_number": resource.get("call_number"),
         # Once real biblionumbers are available from the library export,
         # this becomes a working link to the actual Koha OPAC record.
-        "catalogue_url": f"https://library.thapar.edu/cgi-bin/koha/opac-detail.pl?biblionumber={resource.get('biblionumber', '')}"
+        "catalogue_url": OPAC_URL_TEMPLATE.format(biblionumber=resource["biblionumber"])
             if resource.get("biblionumber") else None,
-        "resource_url": f"http://127.0.0.1:8000/api/resource/{resource['id']}/view",
+        "resource_url": f"/api/resource/{resource['id']}/view",
         "score": item["score"],
         "matched_concepts": item["matched_concepts"],
         "explanation": explain_relevance(resource, item["matched_concepts"]),
@@ -71,8 +142,8 @@ def health():
     return {"status": "ok", "resource_count": len(RESOURCES), "data_source": SOURCE_LABEL}
 
 
-@app.post("/api/search")
-def search(req: SearchRequest):
+@app.post("/api/search", dependencies=[Depends(limit_search)])
+def search(req: SearchRequest, request: Request, background: BackgroundTasks):
     """FR-1 (query input) + FR-2 (concept ID) + FR-3/FR-4 (retrieval + ranking)
     + FR-8 (explanation), all in one response so the frontend can render
     the full discovery view in a single call."""
@@ -82,6 +153,10 @@ def search(req: SearchRequest):
     concepts = extract_concepts(req.query)
     raw_results = RETRIEVER.search(req.query, concepts, top_k=10)
     related_concepts = REL_INDEX.related_concepts_for_many(concepts, top_k=8)
+
+    vid, sid, ua = _ids(request)
+    background.add_task(analytics.log_event, "search", vid, sid, query=req.query,
+                        result_count=len(raw_results), user_agent=ua)
 
     return {
         "query": req.query,
@@ -93,7 +168,7 @@ def search(req: SearchRequest):
 
 
 @app.get("/api/concept/{concept_name}")
-def explore_concept(concept_name: str):
+def explore_concept(concept_name: str, request: Request, background: BackgroundTasks):
     """FR-6: click a related concept -> new discovery view scoped to it."""
     concept_name = concept_name.lower().strip()
     resources = REL_INDEX.resources_for_concept(concept_name)
@@ -102,6 +177,10 @@ def explore_concept(concept_name: str):
         raise HTTPException(status_code=404, detail=f"No resources found for concept '{concept_name}'.")
 
     related_concepts = REL_INDEX.related_concepts(concept_name, top_k=8)
+
+    vid, sid, ua = _ids(request)
+    background.add_task(analytics.log_event, "explore_concept", vid, sid,
+                        target=concept_name, result_count=len(resources), user_agent=ua)
 
     results = []
     for r in resources:
@@ -249,10 +328,7 @@ def resource_view(resource_id: str):
             </div>
 
             <div class="prototype">
-                <strong>Prototype Notice:</strong><br>
-                This is a demonstration resource page generated from
-                synthetic prototype data. It is not a real TIET catalogue
-                record or real library document.
+                <strong>Data source:</strong> {html.escape(SOURCE_LABEL)}
             </div>
 
         </div>
@@ -264,3 +340,50 @@ def resource_view(resource_id: str):
 def list_all_concepts():
     """Utility endpoint - not a formal requirement, useful for debugging/demo."""
     return {"concepts": sorted(REL_INDEX.concept_to_resources.keys())}
+
+
+# =====================================================================
+# Usage tracking + admin dashboard
+# =====================================================================
+
+class TrackEvent(BaseModel):
+    event: str
+    visitor_id: str
+    session_id: str | None = None
+    query: str | None = None
+    target: str | None = None
+
+
+@app.post("/api/track", status_code=204, dependencies=[Depends(limit_track)])
+def track(ev: TrackEvent, request: Request, background: BackgroundTasks):
+    """Browser-side events (page visit, clicks, thumbs up/down). Search and
+    concept events are logged server-side inside their own endpoints."""
+    if ev.event not in analytics.ALLOWED_CLIENT_EVENTS:
+        raise HTTPException(status_code=400, detail="Unknown event.")
+    background.add_task(analytics.log_event, ev.event, ev.visitor_id, ev.session_id,
+                        query=ev.query, target=ev.target,
+                        user_agent=request.headers.get("user-agent"))
+    return Response(status_code=204)
+
+
+def _title_of(resource_id: str):
+    r = RESOURCES_BY_ID.get(resource_id)
+    return r["title"] if r else None
+
+
+@app.get("/admin", response_class=HTMLResponse, include_in_schema=False,
+         dependencies=[Depends(require_admin)])
+def admin_dashboard():
+    stats = analytics.compute_stats(title_lookup=_title_of)
+    return analytics.render_dashboard(stats, SOURCE_LABEL, len(RESOURCES))
+
+
+@app.get("/api/admin/stats", include_in_schema=False, dependencies=[Depends(require_admin)])
+def admin_stats_json():
+    return analytics.compute_stats(title_lookup=_title_of)
+
+
+@app.get("/admin/export.csv", include_in_schema=False, dependencies=[Depends(require_admin)])
+def admin_export():
+    return Response(analytics.export_csv(), media_type="text/csv",
+                    headers={"Content-Disposition": "attachment; filename=arn_events.csv"})
