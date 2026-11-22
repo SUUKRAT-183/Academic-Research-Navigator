@@ -86,3 +86,145 @@ def test_manual_map_override_and_bad_map(tmp_path):
     assert ok.returncode == 0, ok.stdout + ok.stderr
     rec = json.loads((tmp_path / "o.json").read_text())["resources"][0]
     assert rec["title"] == "Book A" and rec["author"] == "Ann" and rec["subjects"] == ["x", "y"]
+
+
+# ---------------------------------------------------------------------------
+# The real TIET export layout (columns copied from the professor's sheet)
+# ---------------------------------------------------------------------------
+TIET_HEADER = ["Accession No", "Call Number", "Title", "Author", "Co-Author(s)", "Language", "Publisher", "Place",
+               "Year", "Edition", "Pages", "ISBN/ISSN", "Subjects", "Material Type", "Biblio ID", "Catalogue Link"]
+OPAC = "https://library.thapar.edu/cgi-bin/koha/opac-detail.pl?biblionumber={}"
+
+
+def tiet_rows(url=OPAC):
+    def row(bib, title, author, co, year, subj, mtype="Text Book", call="005.74 PO"):
+        # Excel hands whole numbers over as floats (794.0)
+        return [None, call, title, author, co, "ENGLISH", "Wiley India", "New Delhi", year, "2nd ed.", "xxviii,571p.",
+                9788126518449.0, subj, mtype, float(bib), url.format(int(bib))]
+    return [
+        row(794, "Data Warehousing Fundamentals", "Ponniah, Paulraj", "Chan, E.C.", 2010, "Data Warehousing; Database management"),
+        row(794, "Data Warehousing Fundamentals", "Ponniah, Paulraj", "Chan, E.C.", 2010, "Data Warehousing; Database management"),  # 2nd copy
+        row(1220, "Fundamentals of Computer Algorithms", "Horowitz, Ellis", None, 2008, "Algorithms; Computer programming"),
+        row(4570, "Objects, Abstraction and Data Structures Using Java", "Koffman, Elliot", "Wolfgang, Paul", 2005,
+            "JAVA (Computer program language); Data structures (Computer science)", "General Book"),
+        row(9324, "Core Java Volume 1", "Horstmann, Cay", None, 2012, "JAVA (Computer program language) -- Handbooks", "General Book"),
+        row(9325, "Learning Java", "Niemeyer, Patrick", None, 2016, "JAVA (Computer program language)", "General Book"),
+        row(9326, "Data Structures in Java", "Weiss, Mark", None, 2014, "Data structures (Computer science); JAVA (Computer program language)"),
+        row(11889, "AutoCAD Basics", "Jones, Fred", "Martin, Lee", 1990, "Auto Cad; Engineering drawing", "General Book"),
+        row(11890, "Engineering Drawing", "Bhatt, N.D.", None, 2001, "Engineering drawing", "Text Book"),
+        [None, "x", None, "No Title Author", None, "ENGLISH", "", "", 2001, "", "", None, "Physics", "Text Book", 99999.0, OPAC.format(99999)],
+    ]
+
+
+def test_real_tiet_excel_layout_end_to_end(tmp_path):
+    from openpyxl import Workbook
+    wb = Workbook(); ws = wb.active; ws.title = "Catalogue"
+    ws.append(TIET_HEADER)
+    for r in tiet_rows():
+        ws.append(r)
+    src = tmp_path / "tiet.xlsx"; wb.save(src)
+    out = tmp_path / "catalogue.json"
+
+    peek = run("scripts.import_library_data", str(src), "--show-columns")
+    assert peek.returncode == 0, peek.stderr
+    for expected in ["title         <- Title", "author        <- Author", "coauthors     <- Co-Author(s)",
+                     "year          <- Year", "type          <- Material Type", "subjects      <- Subjects",
+                     "call_number   <- Call Number", "biblionumber  <- Biblio ID", "isbn          <- ISBN/ISSN",
+                     "catalogue_url <- Catalogue Link", "id            <- (not found)"]:
+        assert expected in peek.stdout, expected + "\n" + peek.stdout
+
+    imp = run("scripts.import_library_data", str(src), "--out", str(out), "--label", "TIET TEST")
+    assert imp.returncode == 0, imp.stdout + imp.stderr
+    assert "repeated record ids" in imp.stdout and "stored once" in imp.stdout
+    data = json.loads(out.read_text(encoding="utf-8"))
+    recs = {r["id"]: r for r in data["resources"]}
+    assert sorted(recs) == ["11889", "11890", "1220", "4570", "794", "9324", "9325", "9326"]   # copy + no-title row dropped, ids are "794" not "794.0"
+    assert recs["794"]["author"] == "Ponniah, Paulraj; Chan, E.C."                          # co-author merged
+    assert recs["1220"]["author"] == "Horowitz, Ellis"
+    assert recs["794"]["type"] == "Text Book" and recs["4570"]["type"] == "General Book"
+    assert recs["794"]["year"] == 2010 and recs["794"]["biblionumber"] == "794"
+    assert recs["794"]["subjects"] == ["Data Warehousing", "Database management"]
+    assert recs["794"]["call_number"] == "005.74 PO"
+    assert recs["794"]["publisher"] == "Wiley India" and recs["794"]["edition"] == "2nd ed."
+    assert not any(k in recs["794"] for k in ("place", "language", "pages", "isbn"))      # opt-in only
+    assert data["_opac_url_template"] == OPAC.format("{biblionumber}")                      # link pattern stored ONCE
+    assert not any("catalogue_url" in r for r in data["resources"])
+
+    vocab = json.loads((tmp_path / "vocabulary.json").read_text(encoding="utf-8"))["terms"]
+    assert "java" in vocab and "data structures" in vocab                                  # qualifiers/subdivisions stripped
+    assert not any("(" in t or "--" in t for t in vocab)
+
+    code = textwrap.dedent("""
+        from fastapi.testclient import TestClient
+        from backend.main import app
+        r = TestClient(app).post("/api/search", json={"query": "java programming"}).json()
+        x = r["results"][0]
+        print(r["identified_concepts"], "|", x["catalogue_url"], "|", x["call_number"], "|", x["publisher"], "|", x["edition"], "|", x["author"])
+    """)
+    env = dict(os.environ, ARN_CATALOGUE_PATH=str(out), ARN_VOCABULARY_PATH=str(tmp_path / "vocabulary.json"),
+               ARN_SQLITE_PATH=str(tmp_path / "a.db"))
+    env.pop("ARN_OPAC_URL_TEMPLATE", None)
+    served = subprocess.run([sys.executable, "-c", code], cwd=ROOT, capture_output=True, text=True, env=env)
+    assert served.returncode == 0, served.stderr
+    assert "'java'" in served.stdout
+    assert "https://library.thapar.edu/cgi-bin/koha/opac-detail.pl?biblionumber=" in served.stdout
+    assert "Wiley India" in served.stdout and "2nd ed." in served.stdout                  # reach the API for the result card
+
+
+def test_catalogue_links_without_a_common_pattern_are_kept_per_record(tmp_path):
+    from openpyxl import Workbook
+    wb = Workbook(); ws = wb.active
+    ws.append(TIET_HEADER)
+    ws.append([None, "1", "Book One", "A", None, "EN", "", "", 2000, "", "", None, "Topic X", "Text Book", 1.0, "https://a.example/rec/1"])
+    ws.append([None, "2", "Book Two", "B", None, "EN", "", "", 2001, "", "", None, "Topic X", "Text Book", 2.0, "https://b.example/other?id=2"])
+    src, out = tmp_path / "x.xlsx", tmp_path / "c.json"; wb.save(src)
+    r = run("scripts.import_library_data", str(src), "--out", str(out), "--no-vocab")
+    assert r.returncode == 0, r.stdout + r.stderr
+    data = json.loads(out.read_text(encoding="utf-8"))
+    assert "_opac_url_template" not in data
+    assert [x["catalogue_url"] for x in data["resources"]] == ["https://a.example/rec/1", "https://b.example/other?id=2"]
+
+
+def test_csv_with_line_breaks_bom_semicolons_and_windows_encoding(tmp_path):
+    """Real exports: UTF-8 BOM or cp1252, ';' or ',' delimiters, and line breaks INSIDE quoted cells."""
+    body = ('Biblio ID;Title;Author;Subjects;Year\r\n'
+            '1;"Data\r\nStructures";"\u00c7engel, Y.";"Algorithms\r\nJava (Computer program language)";2010\r\n'
+            '2;"Plain Book";"Smith, J.";"Algorithms; Databases";2011\r\n'
+            '3;"Third Book";"Roy, K.";"Databases";2012\r\n')
+    src, out = tmp_path / "x.csv", tmp_path / "c.json"
+    src.write_bytes(body.encode("cp1252"))
+    r = run("scripts.import_library_data", str(src), "--out", str(out), "--no-vocab")
+    assert r.returncode == 0, r.stdout + r.stderr
+    recs = {x["id"]: x for x in json.loads(out.read_text(encoding="utf-8"))["resources"]}
+    assert recs["1"]["title"] == "Data Structures"                       # NOT "DataStructures"
+    assert recs["1"]["author"].startswith("\u00c7engel")                 # cp1252 decoded
+    assert recs["1"]["subjects"] == ["Algorithms", "Java (Computer program language)"]   # line break separates subjects
+    assert recs["2"]["subjects"] == ["Algorithms", "Databases"]
+
+    src2 = tmp_path / "y.csv"
+    src2.write_bytes(b"\xef\xbb\xbf" + body.replace(";", ",").replace('"Algorithms\r\nJava', '"Algorithms\r\nJava').encode("utf-8"))
+    r2 = run("scripts.import_library_data", str(src2), "--out", str(tmp_path / "d.json"), "--no-vocab")
+    assert r2.returncode == 0, r2.stdout + r2.stderr
+
+
+def test_undetectable_delimiter_falls_back_to_comma(tmp_path):
+    src = tmp_path / "z.csv"
+    src.write_text("Title\nOnly One Column Book\nAnother\n", encoding="utf-8")        # nothing for the sniffer to detect
+    r = run("scripts.import_library_data", str(src), "--out", str(tmp_path / "o.json"), "--no-vocab")
+    assert r.returncode == 0, r.stdout + r.stderr
+    assert len(json.loads((tmp_path / "o.json").read_text(encoding="utf-8"))["resources"]) == 2
+
+
+def test_extra_fields_are_stored_only_when_asked(tmp_path):
+    from openpyxl import Workbook
+    wb = Workbook(); ws = wb.active; ws.append(TIET_HEADER)
+    for r in tiet_rows()[:3]:
+        ws.append(r)
+    src, out = tmp_path / "x.xlsx", tmp_path / "c.json"; wb.save(src)
+    r = run("scripts.import_library_data", str(src), "--out", str(out), "--no-vocab", "--extra-fields", "place,language,pages,isbn")
+    assert r.returncode == 0, r.stdout + r.stderr
+    rec = json.loads(out.read_text(encoding="utf-8"))["resources"][0]
+    assert rec["place"] == "New Delhi" and rec["language"] == "ENGLISH" and rec["pages"] == "xxviii,571p."
+    assert rec["isbn"] == "9788126518449"                                              # float 9788126518449.0 -> clean digits
+    bad = run("scripts.import_library_data", str(src), "--out", str(out), "--no-vocab", "--extra-fields", "colour")
+    assert bad.returncode != 0 and "unknown" in (bad.stdout + bad.stderr)

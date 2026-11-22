@@ -19,7 +19,11 @@ JUNK = {"", "unknown", "n/a", "na", "none", "null", "nil", "-", "--", "general",
 
 
 def clean_term(term: str) -> str:
+    """Library subject headings look like "Java (Computer program language) -- Handbooks".
+    People search for "java", so keep only the main heading and drop the (qualifier) and subdivisions."""
     t = re.sub(r"\s+", " ", str(term).strip().lower())
+    t = re.split(r"\s*--\s*", t)[0]                 # main heading, without subdivisions
+    t = re.sub(r"\s*\([^)]*\)", "", t)              # drop "(qualifier)" parts
     return t.strip(" .,;:/-")
 
 

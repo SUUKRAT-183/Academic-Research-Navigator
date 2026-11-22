@@ -27,19 +27,29 @@ from pydantic import BaseModel
 
 from . import analytics
 from .concepts import extract_concepts
-from .data_loader import load_catalogue
+from .data_loader import CATALOGUE_META, _release_memory, load_catalogue
 from .explain import explain_relevance
 from .relationships import RelationshipIndex
 from .retrieval import Retriever
 
 FRONTEND_DIR = Path(__file__).resolve().parent.parent / "frontend"
 
-# Link to the real library record. Needs a "biblionumber" per resource in the data.
-# Change it with the ARN_OPAC_URL_TEMPLATE env var if the library's URL differs.
-OPAC_URL_TEMPLATE = os.environ.get(
-    "ARN_OPAC_URL_TEMPLATE",
-    "https://library.thapar.edu/cgi-bin/koha/opac-detail.pl?biblionumber={biblionumber}",
-)
+# Link to the real library record. Order of preference:
+#   1. a link stored on the record itself  2. ARN_OPAC_URL_TEMPLATE (env var)
+#   3. the pattern stored in the catalogue file by the importer  4. the default below
+_ENV_OPAC_TEMPLATE = os.environ.get("ARN_OPAC_URL_TEMPLATE")
+DEFAULT_OPAC_URL_TEMPLATE = "https://library.thapar.edu/cgi-bin/koha/opac-detail.pl?biblionumber={biblionumber}"
+
+
+def catalogue_url_for(resource):
+    if resource.get("catalogue_url"):
+        return resource["catalogue_url"]
+    biblionumber = resource.get("biblionumber")
+    if not biblionumber:
+        return None
+    template = _ENV_OPAC_TEMPLATE or CATALOGUE_META.get("opac_url_template") or DEFAULT_OPAC_URL_TEMPLATE
+    return template.format(biblionumber=biblionumber)
+
 
 app = FastAPI(title="Academic Research Navigator")
 
@@ -54,12 +64,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Most resources one "explore concept" click returns (a popular concept can cover tens of thousands).
+EXPLORE_LIMIT = int(os.environ.get("ARN_EXPLORE_LIMIT", "100"))
+
 # ---- load data + build indexes once at startup ----
 RESOURCES, SOURCE_LABEL = load_catalogue()
 RETRIEVER = Retriever(RESOURCES)
 REL_INDEX = RelationshipIndex(RESOURCES)
 RESOURCES_BY_ID = {r["id"]: r for r in RESOURCES}
 
+_release_memory()
 analytics.init_db()
 
 # ---- basic abuse protection (per client IP, in memory) ----
@@ -103,7 +117,7 @@ def _ids(request: Request):
             request.headers.get("user-agent"))
 
 
-@app.get("/", include_in_schema=False)
+@app.api_route("/", methods=["GET", "HEAD"], include_in_schema=False)
 def home():
     return FileResponse(FRONTEND_DIR / "index.html")
 
@@ -127,8 +141,13 @@ def _serialize_result(item):
         "call_number": resource.get("call_number"),
         # Once real biblionumbers are available from the library export,
         # this becomes a working link to the actual Koha OPAC record.
-        "catalogue_url": OPAC_URL_TEMPLATE.format(biblionumber=resource["biblionumber"])
-            if resource.get("biblionumber") else None,
+        "catalogue_url": catalogue_url_for(resource),
+        "publisher": resource.get("publisher"),
+        "place": resource.get("place"),
+        "edition": resource.get("edition"),
+        "language": resource.get("language"),
+        "pages": resource.get("pages"),
+        "isbn": resource.get("isbn"),
         "resource_url": f"/api/resource/{resource['id']}/view",
         "score": item["score"],
         "matched_concepts": item["matched_concepts"],
@@ -137,9 +156,27 @@ def _serialize_result(item):
     }
 
 
-@app.get("/api/health")
+def _memory_mb():
+    """Memory used by this server process, in MB. Works on Linux (Render); returns None on Windows/Mac.
+    Render's free plan hides its own memory graph, so this is how you watch the 512 MB limit."""
+    try:
+        values = {}
+        with open("/proc/self/status", "r") as f:
+            for line in f:
+                if line.startswith(("VmRSS", "VmHWM")):
+                    values[line.split(":")[0]] = round(int(line.split()[1]) / 1024)
+        return values.get("VmRSS"), values.get("VmHWM")
+    except OSError:
+        return None, None
+
+
+# GET and HEAD: uptime monitors (e.g. UptimeRobot) often check with HEAD, which would otherwise get a 405.
+@app.api_route("/api/health", methods=["GET", "HEAD"])
 def health():
-    return {"status": "ok", "resource_count": len(RESOURCES), "data_source": SOURCE_LABEL}
+    current, peak = _memory_mb()
+    return {"status": "ok", "resource_count": len(RESOURCES), "data_source": SOURCE_LABEL,
+            "memory_mb": current, "memory_peak_mb": peak, "memory_limit_mb_free_plan": 512,
+            "stats_storage": analytics.storage_backend()}
 
 
 @app.post("/api/search", dependencies=[Depends(limit_search)])
@@ -171,7 +208,8 @@ def search(req: SearchRequest, request: Request, background: BackgroundTasks):
 def explore_concept(concept_name: str, request: Request, background: BackgroundTasks):
     """FR-6: click a related concept -> new discovery view scoped to it."""
     concept_name = concept_name.lower().strip()
-    resources = REL_INDEX.resources_for_concept(concept_name)
+    total = REL_INDEX.count_for_concept(concept_name)
+    resources = REL_INDEX.resources_for_concept(concept_name, limit=EXPLORE_LIMIT)
 
     if not resources:
         raise HTTPException(status_code=404, detail=f"No resources found for concept '{concept_name}'.")
@@ -194,7 +232,8 @@ def explore_concept(concept_name: str, request: Request, background: BackgroundT
         "concept": concept_name,
         "related_concepts": related_concepts,
         "results": results,
-        "result_count": len(results),
+        "result_count": total,                 # how many resources carry this concept
+        "results_shown": len(results),         # capped so a popular concept stays a small response
     }
 
 

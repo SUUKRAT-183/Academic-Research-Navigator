@@ -138,9 +138,22 @@ def _whole_word(phrase: str):
     return re.compile(r"(?<![a-z0-9])" + re.escape(phrase) + r"(?![a-z0-9])")
 
 
-_VOCAB_PATTERNS = [(t, _whole_word(t)) for t in
+_TOKEN_RE = re.compile(r"[a-z0-9]+")
+
+
+def _first_token(phrase: str):
+    """First alphanumeric run of a phrase, e.g. "machine learning" -> "machine"."""
+    m = _TOKEN_RE.match(phrase)
+    return m.group(0) if m else None
+
+
+# SPEED: running every term's regex over every abstract is slow (it was ~97% of start-up time).
+# A whole-word match of a phrase can only exist if the phrase's FIRST word is a whole word of the
+# text, and that is a cheap set lookup. So the regex only runs for the few terms that pass it.
+# (Results are identical; tests/test_concepts.py checks this against the plain regex loop.)
+_VOCAB_PATTERNS = [(t, _whole_word(t), _first_token(t)) for t in
                    sorted(CONTROLLED_VOCABULARY, key=len, reverse=True)]
-_ALIAS_PATTERNS = [(c, _whole_word(a)) for a, c in ALIASES.items()]
+_ALIAS_PATTERNS = [(c, _whole_word(a), _first_token(a)) for a, c in ALIASES.items()]
 
 
 def _normalize(text: str) -> str:
@@ -157,16 +170,17 @@ def extract_concepts(query: str) -> List[str]:
     This is FR-2 from the requirements doc.
     """
     q = _normalize(query)
+    tokens = set(_TOKEN_RE.findall(q))
     found = set()
 
     # direct vocabulary phrase matches, as whole words/phrases
-    for term, pattern in _VOCAB_PATTERNS:
-        if pattern.search(q):
+    for term, pattern, first in _VOCAB_PATTERNS:
+        if (first is None or first in tokens) and pattern.search(q):
             found.add(term)
 
     # alias matches (e.g. "sci-fi" -> "science fiction")
-    for canonical, pattern in _ALIAS_PATTERNS:
-        if pattern.search(q):
+    for canonical, pattern, first in _ALIAS_PATTERNS:
+        if (first is None or first in tokens) and pattern.search(q):
             found.add(canonical)
 
     return sorted(found)

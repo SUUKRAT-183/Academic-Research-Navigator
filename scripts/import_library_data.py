@@ -19,6 +19,7 @@ Everything except title can be missing; the site just has less to show/match.
 """
 import argparse
 import csv
+import io
 import json
 import os
 import re
@@ -43,9 +44,20 @@ GUESSES = {
                      "biblio.abstract"],
     "call_number":  ["callnumber", "callno", "itemcallnumber", "shelfmark", "ddc", "classno",
                      "items.itemcallnumber", "952o"],
-    "biblionumber": ["biblionumber", "biblionum", "bibid", "recordid", "biblio.biblionumber"],
-    "isbn":         ["isbn", "isbn13", "isbn10", "biblioitems.isbn"],
-    "id":           ["id", "identifier", "recordnumber", "accessionnumber", "accessionno", "accno", "barcode"],
+    "biblionumber": ["biblionumber", "biblionum", "biblioid", "biblioidnumber", "bibliono", "bibid",
+                     "recordid", "biblio.biblionumber"],
+    "isbn":         ["isbn", "isbn13", "isbn10", "isbnissn", "issn", "biblioitems.isbn"],
+    # NOTE: accession numbers / barcodes identify one physical COPY, not the book, so they are NOT
+    # guessed as the id (several copies would then appear as duplicate results). Use --map id=... to force.
+    "id":           ["id", "identifier", "recordnumber"],
+    "publisher":    ["publisher", "publishername", "imprint"],
+    "place":        ["place", "placeofpublication", "publicationplace", "city"],
+    "edition":      ["edition", "editionstatement"],
+    "language":     ["language", "lang"],
+    "pages":        ["pages", "extent", "physicaldescription", "pagination"],
+    "coauthors":    ["coauthor", "coauthors", "coauthor(s)", "otherauthors", "additionalauthors", "secondaryauthors"],
+    "catalogue_url": ["cataloguelink", "catalogurl", "cataloglink", "catalogueurl", "opaclink", "opacurl",
+                      "recordlink", "link", "url"],
 }
 LIST_FIELDS = ("subjects", "keywords")
 
@@ -72,9 +84,17 @@ def read_rows(path, sheet=None):
                 break
             except UnicodeDecodeError:
                 continue
-        delim = "\t" if ext == ".tsv" else (csv.Sniffer().sniff(text[:5000], delimiters=",;\t|").delimiter
-                                            if text[:5000].strip() else ",")
-        reader = csv.DictReader(text.splitlines(), delimiter=delim)
+        del raw
+        delim = "\t" if ext == ".tsv" else ","
+        if ext != ".tsv" and text[:5000].strip():
+            try:
+                delim = csv.Sniffer().sniff(text[:5000], delimiters=",;\t|").delimiter
+            except csv.Error:
+                delim = ","                      # could not tell: assume a normal comma-separated file
+        csv.field_size_limit(50_000_000)
+        # newline="" lets the csv module see line breaks INSIDE quoted cells (a plain splitlines()
+        # would silently glue those lines together: "Data\nStructures" -> "DataStructures")
+        reader = csv.DictReader(io.StringIO(text, newline=""), delimiter=delim)
         return reader.fieldnames or [], list(reader)
     sys.exit(f"Unsupported file type '{ext}'. Export from the library as CSV or XLSX.")
 
@@ -108,11 +128,36 @@ def get_year(value):
     return int(m.group(1)) if m else None
 
 
-def convert(rows, mapping, subject_sep=";|", default_type="Book"):
+def derive_opac_url_template(resources):
+    """If every record's catalogue link is the same URL with only the biblionumber changing, return
+    that pattern ("...biblionumber={biblionumber}") so it can be stored ONCE instead of 160,000 times."""
+    pairs = [(r["catalogue_url"], r["biblionumber"]) for r in resources
+             if r.get("catalogue_url") and r.get("biblionumber")]
+    if not pairs:
+        return None
+    url, bn = pairs[0]
+    if url.count(bn) != 1 or "{" in url or "}" in url:
+        return None
+    template = url.replace(bn, "{biblionumber}")
+    return template if all(template.format(biblionumber=b) == u for u, b in pairs) else None
+
+
+CORE_FIELDS = ("call_number", "biblionumber", "catalogue_url", "publisher", "edition")
+EXTRA_FIELDS = ("place", "language", "pages", "isbn")      # opt-in: each costs memory and catalogue-file size
+
+
+def convert(rows, mapping, subject_sep=";|", default_type="Book", extra_fields=()):
     def cell(row, field):
         col = mapping.get(field)
         v = row.get(col, "") if col else ""
-        return "" if v is None else str(v).strip()
+        if v is None:
+            return ""
+        if isinstance(v, float) and v.is_integer():     # Excel stores 794 as 794.0
+            v = int(v)
+        v = str(v).strip()
+        if field in ("subjects", "keywords"):
+            return v                                     # a line break may separate two subjects: keep it
+        return re.sub(r"\s+", " ", v)                    # elsewhere a line break is just stray whitespace
 
     resources, seen_ids, stats = [], set(), {"no_title": 0, "duplicates": 0}
     for i, row in enumerate(rows, start=1):
@@ -120,25 +165,31 @@ def convert(rows, mapping, subject_sep=";|", default_type="Book"):
         if not title:
             stats["no_title"] += 1
             continue
-        rid = cell(row, "id") or cell(row, "biblionumber") or cell(row, "isbn") or f"L{i:06d}"
+        # The library's own record number wins: it is one per BOOK (an accession number is one per copy).
+        rid = cell(row, "biblionumber") or cell(row, "id") or cell(row, "isbn") or f"L{i:06d}"
         if rid in seen_ids:
             stats["duplicates"] += 1
             continue
         seen_ids.add(rid)
+
+        author = cell(row, "author")
+        co = cell(row, "coauthors")
+        if co:
+            author = f"{author}; {co}" if author else co
 
         subjects = split_list(cell(row, "subjects"), subject_sep)
         keywords = split_list(cell(row, "keywords"), subject_sep) or list(subjects)
         rec = {
             "id": rid,
             "title": title,
-            "author": cell(row, "author") or "Unknown",
+            "author": author or "Unknown",
             "year": get_year(cell(row, "year")),
             "type": cell(row, "type") or default_type,
             "subjects": subjects,
             "keywords": keywords,
             "abstract": cell(row, "abstract"),
         }
-        for optional in ("call_number", "biblionumber", "isbn"):
+        for optional in CORE_FIELDS + tuple(extra_fields):
             if cell(row, optional):
                 rec[optional] = cell(row, optional)
         resources.append(rec)
@@ -154,6 +205,10 @@ def main():
     ap.add_argument("--subject-sep", default=";|", help="characters that separate several subjects in one cell "
                     "(default ';' and '|'; use \",\" if the library separates with commas)")
     ap.add_argument("--default-type", default="Book")
+    ap.add_argument("--extra-fields", default="", metavar="LIST",
+                    help="also store these columns: any of " + ", ".join(EXTRA_FIELDS) + " (comma separated). "
+                    "Off by default: each one adds ~6-10 MB of memory per 137,000 records and makes the "
+                    "catalogue file bigger. Publisher and edition are always stored.")
     ap.add_argument("--label", help="shown on the site/dashboard as the data source")
     ap.add_argument("--out", default=os.path.join(ROOT, "data", "catalogue.json"))
     ap.add_argument("--show-columns", action="store_true", help="only print columns and guesses, write nothing")
@@ -179,7 +234,11 @@ def main():
     if "title" not in mapping:
         sys.exit("\nNo title column found. Use --map title=<column name>.")
 
-    resources, stats = convert(rows, mapping, a.subject_sep, a.default_type)
+    extra = tuple(x.strip() for x in a.extra_fields.split(",") if x.strip())
+    unknown = [x for x in extra if x not in EXTRA_FIELDS]
+    if unknown:
+        sys.exit(f"--extra-fields: unknown {unknown}. Choose from {list(EXTRA_FIELDS)}.")
+    resources, stats = convert(rows, mapping, a.subject_sep, a.default_type, extra)
     n = len(resources)
     if not n:
         sys.exit("No usable records.")
@@ -187,7 +246,12 @@ def main():
     def pct(pred):
         return round(100 * sum(1 for r in resources if pred(r)) / n)
 
-    print(f"\nImported {n} records (skipped {stats['no_title']} without title, {stats['duplicates']} duplicate ids)")
+    opac_template = derive_opac_url_template(resources)
+    if opac_template:
+        for r in resources:
+            r.pop("catalogue_url", None)           # stored once in the file header instead
+    print(f"\nImported {n} records (skipped {stats['no_title']} without title, "
+          f"{stats['duplicates']} repeated record ids: usually extra copies of the same book)")
     print("Completeness:")
     print(f"  author        {pct(lambda r: r['author'] != 'Unknown')}%")
     print(f"  year          {pct(lambda r: r['year'])}%")
@@ -195,6 +259,14 @@ def main():
     print(f"  abstract      {pct(lambda r: r['abstract'])}%")
     print(f"  call number   {pct(lambda r: r.get('call_number'))}%")
     print(f"  biblionumber  {pct(lambda r: r.get('biblionumber'))}%")
+    print(f"  publisher     {pct(lambda r: r.get('publisher'))}%   edition {pct(lambda r: r.get('edition'))}%")
+    skipped = [f for f in EXTRA_FIELDS if f in mapping and f not in extra]
+    if skipped:
+        print(f"  not stored (saves memory): {', '.join(skipped)}   (add them with --extra-fields {','.join(skipped)})")
+    if opac_template:
+        print(f"  catalogue links follow one pattern, stored once: {opac_template}")
+    elif "catalogue_url" in mapping:
+        print(f"  catalogue link {pct(lambda r: r.get('catalogue_url'))}%  (no common pattern, stored per record)")
     if pct(lambda r: r["subjects"]) < 50:
         print("\n!! Under half the records have subjects. Concepts, related-concepts and ranking depend on "
               "them. Check the subjects mapping / --subject-sep, or ask the library for a fuller export.")
@@ -209,7 +281,10 @@ def main():
             shutil.copy(a.out, backup)
             print(f"\nBacked up the previous catalogue to {os.path.relpath(backup)}")
     with open(a.out, "w", encoding="utf-8") as f:
-        json.dump({"_source_label": label, "resources": resources}, f, ensure_ascii=False)
+        header = {"_source_label": label}
+        if opac_template:
+            header["_opac_url_template"] = opac_template
+        json.dump({**header, "resources": resources}, f, ensure_ascii=False)
     print(f"Wrote {a.out}  (source label: {label!r})")
 
     if not a.no_vocab:
