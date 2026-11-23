@@ -178,3 +178,25 @@ What the website shows for a library record:
   Excel version (~15 MB, compressed) takes about 40 seconds and more RAM. Either needs ~1 GB of free RAM while importing.
   The CSV reader copes with UTF-8 (with or without BOM), Windows cp1252, `,` or `;` delimiters and line breaks inside cells.
 - Run `--show-columns` first, as always. Every line should show a column except abstract, keywords and id.
+
+## Subjects joined by spaces (the Nalanda/TIET export)
+In this export several headings share one cell with NO separator, e.g.
+`Concrete Technology Concrete Construction Concrete` (three headings) or
+`Computer programming Electronic digital computer-programming` (two). Nothing can split that automatically
+by punctuation, so the importer can LEARN the library's headings from the data instead:
+
+    python -m scripts.import_library_data "library_data\nalanda.csv" --segment-subjects --label "TIET Central Library catalogue"
+
+How it works: a heading that stands ALONE in a cell many times (like "Physics") is a real heading. Every long
+cell is then cut into the longest known headings. Words that match nothing stay together as one leftover piece, and a
+leftover that starts with a lowercase word or a dash ("and Technology - Congresses") is glued back onto the heading
+before it. Headings that are really two known headings side by side are not themselves treated as headings.
+
+Read the line it prints: `Subject splitter: learned N headings; X% of M multi-word subject cells split cleanly`.
+- 85% or more: very likely good. Check the concept list (`data\vocabulary.json`) looks like real subjects.
+- 60-85%: usable, expect some wrong or missing concepts.
+- under 60%: the importer warns you. Ask the library for an export with `;` between the subjects of each record.
+  (On test data with known answers: 95% of records were split exactly right when 30% of records carry a single
+  heading, 90% at 15%, and 76% at 5%.)
+
+Whatever you do, ask the library for the `;`-separated version too. It is always better than guessing.

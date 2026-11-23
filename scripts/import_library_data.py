@@ -27,6 +27,8 @@ import shutil
 import sys
 from datetime import date
 
+from .segment_subjects import SubjectSegmenter, looks_space_joined
+
 ROOT = os.path.join(os.path.dirname(__file__), "..")
 
 # column-name guesses, checked in order, case/space/underscore-insensitive.
@@ -146,7 +148,7 @@ CORE_FIELDS = ("call_number", "biblionumber", "catalogue_url", "publisher", "edi
 EXTRA_FIELDS = ("place", "language", "pages", "isbn")      # opt-in: each costs memory and catalogue-file size
 
 
-def convert(rows, mapping, subject_sep=";|", default_type="Book", extra_fields=()):
+def convert(rows, mapping, subject_sep=";|", default_type="Book", extra_fields=(), segmenter=None):
     def cell(row, field):
         col = mapping.get(field)
         v = row.get(col, "") if col else ""
@@ -178,6 +180,14 @@ def convert(rows, mapping, subject_sep=";|", default_type="Book", extra_fields=(
             author = f"{author}; {co}" if author else co
 
         subjects = split_list(cell(row, "subjects"), subject_sep)
+        if segmenter:                                     # cut space-joined headings into separate subjects
+            cut, seen_subjects = [], set()
+            for piece in subjects:
+                for part in segmenter.split(piece):
+                    if part.lower() not in seen_subjects:
+                        seen_subjects.add(part.lower())
+                        cut.append(part)
+            subjects = cut
         keywords = split_list(cell(row, "keywords"), subject_sep) or list(subjects)
         rec = {
             "id": rid,
@@ -196,6 +206,15 @@ def convert(rows, mapping, subject_sep=";|", default_type="Book", extra_fields=(
     return resources, stats
 
 
+def _shown(path):
+    """A short path to print. os.path.relpath() raises ValueError on Windows when the file is on a
+    different drive than the current folder (C: temp folder, E: project), so fall back to the full path."""
+    try:
+        return os.path.relpath(path)
+    except ValueError:
+        return os.path.abspath(path)
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("input", help="CSV / TSV / XLSX file from the library")
@@ -205,6 +224,10 @@ def main():
     ap.add_argument("--subject-sep", default=";|", help="characters that separate several subjects in one cell "
                     "(default ';' and '|'; use \",\" if the library separates with commas)")
     ap.add_argument("--default-type", default="Book")
+    ap.add_argument("--segment-subjects", action="store_true",
+                    help="use when several subject headings sit in one cell joined by plain spaces with no separator "
+                    "(e.g. 'Concrete Technology Concrete Construction'). Learns the library's headings from the data "
+                    "and splits the cells. A re-export with ';' between subjects is better if you can get one.")
     ap.add_argument("--extra-fields", default="", metavar="LIST",
                     help="also store these columns: any of " + ", ".join(EXTRA_FIELDS) + " (comma separated). "
                     "Off by default: each one adds ~6-10 MB of memory per 137,000 records and makes the "
@@ -234,11 +257,26 @@ def main():
     if "title" not in mapping:
         sys.exit("\nNo title column found. Use --map title=<column name>.")
 
+    segmenter = None
+    if "subjects" in mapping:
+        pieces = [p for row in rows for p in split_list(row.get(mapping["subjects"]) or "", a.subject_sep)]
+        if a.segment_subjects:
+            segmenter = SubjectSegmenter.learn(pieces)
+            share, multi = segmenter.quality(pieces)
+            print(f"\nSubject splitter: learned {len(segmenter.headings)} headings from the data; "
+                  f"{share:.0%} of {multi} multi-word subject cells split cleanly into known headings.")
+            if share < 0.6:
+                print("!! Under 60% split cleanly. Many concepts will be wrong or missing. Ask the library for an "
+                      "export with ';' between the subjects of each record.")
+        elif looks_space_joined(pieces):
+            print("\n!! Many Subjects cells look like several headings joined by spaces. Add --segment-subjects to "
+                  "split them (or ask the library for an export with ';' between subjects).")
+
     extra = tuple(x.strip() for x in a.extra_fields.split(",") if x.strip())
     unknown = [x for x in extra if x not in EXTRA_FIELDS]
     if unknown:
         sys.exit(f"--extra-fields: unknown {unknown}. Choose from {list(EXTRA_FIELDS)}.")
-    resources, stats = convert(rows, mapping, a.subject_sep, a.default_type, extra)
+    resources, stats = convert(rows, mapping, a.subject_sep, a.default_type, extra, segmenter)
     n = len(resources)
     if not n:
         sys.exit("No usable records.")
@@ -279,7 +317,7 @@ def main():
         backup = os.path.join(os.path.dirname(a.out), "catalogue_kaggle_backup.json")
         if not os.path.exists(backup):
             shutil.copy(a.out, backup)
-            print(f"\nBacked up the previous catalogue to {os.path.relpath(backup)}")
+            print(f"\nBacked up the previous catalogue to {_shown(backup)}")
     with open(a.out, "w", encoding="utf-8") as f:
         header = {"_source_label": label}
         if opac_template:
