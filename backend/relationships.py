@@ -17,6 +17,7 @@ from collections import defaultdict
 class RelationshipIndex:
     def __init__(self, resources):
         self.resources = resources
+        self._by_id = None
         self.concept_to_resources = defaultdict(list)
         self.concept_cooccurrence = defaultdict(lambda: defaultdict(int))
 
@@ -29,10 +30,18 @@ class RelationshipIndex:
                     if c1 != c2:
                         self.concept_cooccurrence[c1][c2] += 1
 
-    def resources_for_concept(self, concept: str):
+    def count_for_concept(self, concept: str) -> int:
+        return len(self.concept_to_resources.get(concept, []))
+
+    def resources_for_concept(self, concept: str, limit=None):
+        """Resources tagged with the concept, in catalogue order. `limit` caps how many are
+        returned: a popular concept can cover tens of thousands of records."""
         ids = self.concept_to_resources.get(concept, [])
-        by_id = {r["id"]: r for r in self.resources}
-        return [by_id[i] for i in ids if i in by_id]
+        if limit is not None:
+            ids = ids[:limit]
+        if self._by_id is None:                        # built once, on first use
+            self._by_id = {r["id"]: r for r in self.resources}
+        return [self._by_id[i] for i in ids if i in self._by_id]
 
     def related_concepts(self, concept: str, top_k: int = 6):
         related = self.concept_cooccurrence.get(concept, {})

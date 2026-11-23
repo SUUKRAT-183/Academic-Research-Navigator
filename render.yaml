@@ -1,17 +1,18 @@
 # One-click deploy blueprint for Render (https://render.com).
-# Push this project to GitHub, then Render -> New -> Blueprint -> pick the repo.
+# Push the project to GitHub, then Render -> New -> Blueprint -> pick the repo.
 services:
   - type: web
     name: arn
     runtime: python
     plan: free
+    region: singapore          # closest to India. If Render rejects this line, delete it (it will use Oregon).
     buildCommand: pip install -r requirements.txt
     startCommand: uvicorn backend.main:app --host 0.0.0.0 --port $PORT
     healthCheckPath: /api/health
     envVars:
-      - key: PYTHON_VERSION
+      - key: PYTHON_VERSION    # must be a full version number, e.g. 3.12.8
         value: 3.12.8
-      - key: ADMIN_PASSWORD      # password for /admin (user name can be anything)
+      - key: ADMIN_PASSWORD    # password for /admin (user name can be anything)
         sync: false
-      - key: DATABASE_URL        # Postgres URL from Neon/Supabase (keeps your stats safe)
+      - key: DATABASE_URL      # Postgres URL from Neon (keeps your stats safe)
         sync: false

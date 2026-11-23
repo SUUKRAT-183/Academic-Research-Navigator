@@ -101,6 +101,11 @@ def _get_engine():
     return _engine
 
 
+def storage_backend() -> str:
+    """"postgresql" when DATABASE_URL points at Postgres (e.g. Neon), otherwise "sqlite" (a local file)."""
+    return "postgresql" if _database_url().startswith("postgresql") else "sqlite"
+
+
 def init_db():
     """Call once at startup. Never raises - the site must work without analytics."""
     try:
@@ -299,6 +304,12 @@ def export_csv() -> str:
 
 def render_dashboard(s: dict, source_label: str, resource_count: int) -> str:
     esc = html.escape
+    if storage_backend() == "postgresql":
+        storage_note = "Stats stored in: <b>PostgreSQL</b> (safe across restarts and redeploys)"
+    else:
+        storage_note = ("Stats stored in: <b style='color:#c0392b'>a local SQLite file</b>. "
+                        "Fine on your laptop, but on a free host this file is erased on every restart. "
+                        "Set DATABASE_URL to a Postgres database.")
 
     def card(label, value, sub=""):
         return (f"<div class='card'><div class='v'>{esc(str(value))}</div>"
@@ -353,6 +364,7 @@ a.btn{{display:inline-block;margin-top:10px;padding:8px 14px;background:#4f6df5;
 </style></head><body><div class="wrap">
 <h1>ARN usage dashboard</h1>
 <div class="muted">Data source: {esc(source_label)} · {resource_count} resources · {s['total_events']} recorded events · times in IST</div>
+<div class="muted" style="margin-top:4px">{storage_note}</div>
 <div class="cards">{cards}</div>
 <h2>Unique visitors per day (last {len(s['daily'])} days)</h2><div class="chart">{bars}</div>
 <div class="grid">

@@ -114,3 +114,28 @@ def test_resource_page_shows_data_source():
     rid = next(iter(client.post("/api/search", json={"query": KNOWN_QUERY}, headers=hdr()).json()["results"]))["id"]
     r = client.get(f"/api/resource/{rid}/view")
     assert r.status_code == 200 and "Data source" in r.text
+
+
+def test_health_reports_memory_and_stats_storage():
+    h = client.get("/api/health").json()
+    assert h["status"] == "ok" and h["stats_storage"] == "sqlite"       # tests run on the local file
+    assert "memory_mb" in h and "memory_peak_mb" in h                   # None on Windows/Mac, numbers on Linux
+    if os.path.exists("/proc/self/status"):
+        assert h["memory_mb"] > 0 and h["memory_peak_mb"] >= h["memory_mb"]
+
+
+def test_dashboard_says_where_stats_are_stored():
+    page = client.get("/admin", auth=("admin", "secret123")).text
+    assert "Stats stored in" in page and "SQLite" in page
+
+
+def test_postgres_url_is_detected_without_connecting(monkeypatch):
+    monkeypatch.setenv("DATABASE_URL", "postgres://u:p@ep-x.neon.tech/db?sslmode=require")
+    assert analytics.storage_backend() == "postgresql"
+    assert analytics._database_url().startswith("postgresql+psycopg://")
+
+
+def test_health_and_home_accept_head_requests_for_uptime_monitors():
+    assert client.head("/api/health").status_code == 200
+    assert client.head("/").status_code == 200
+    assert client.get("/api/health").status_code == 200

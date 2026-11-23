@@ -4,3 +4,7 @@ __pycache__/
 data/analytics.db
 .venv/
 venv/
+
+# raw/huge or private input files: NEVER commit these
+library_data/
+data/catalogue_kaggle_backup.json

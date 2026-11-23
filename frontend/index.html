@@ -4127,6 +4127,18 @@
                         ""
                     ),
 
+                publisher:
+                    firstValue(item, ["publisher"], ""),
+                place:
+                    firstValue(item, ["place"], ""),
+                edition:
+                    firstValue(item, ["edition"], ""),
+                language:
+                    firstValue(item, ["language"], ""),
+                pages:
+                    firstValue(item, ["pages"], ""),
+                isbn:
+                    firstValue(item, ["isbn"], ""),
                 classification:
                     firstValue(
                         item,
@@ -4699,9 +4711,7 @@
 
 
             meta.textContent =
-                resource.year
-                    ? `${resource.author} · ${resource.year}`
-                    : resource.author;
+                metaLine(resource);
 
 
             main.appendChild(
@@ -5172,7 +5182,7 @@
 
 
                 catalogue.textContent =
-                    "CATALOGUE →";
+                    "VIEW IN LIBRARY →";
 
 
                 catalogue.onclick =
@@ -5197,9 +5207,7 @@
             */
 
             if (
-                resource.resourceUrl &&
-                resource.resourceUrl !==
-                    resource.catalogueUrl
+                resource.resourceUrl && !resource.catalogueUrl
             ) {
 
                 const openResource =
@@ -5375,9 +5383,7 @@
             document.getElementById(
                 "modalAuthor"
             ).textContent =
-                resource.year
-                    ? `${resource.author} · ${resource.year}`
-                    : resource.author;
+                metaLine(resource);
 
 
             /*
@@ -5486,25 +5492,27 @@
             );
 
 
-            addModalDetail(
-                details,
-                "Classification",
-                resource.classification
-            );
+            addModalDetail(details, "Publisher", resource.publisher, true);
+            addModalDetail(details, "Edition", resource.edition, true);
+            addModalDetail(details, "Place of publication", resource.place, true);
+            addModalDetail(details, "Language", resource.language, true);
+            addModalDetail(details, "Pages", resource.pages, true);
+            addModalDetail(details, "ISBN / ISSN", resource.isbn, true);
+            addModalDetail(details, "Classification", resource.classification, true);
 
 
             addModalDetail(
                 details,
                 "Availability",
-                resource.availability
+                resource.availability ||
+                    (resource.catalogueUrl
+                        ? "Check live availability in the library catalogue"
+                        : ""),
+                true
             );
 
 
-            addModalDetail(
-                details,
-                "Department / Programme",
-                resource.department
-            );
+            addModalDetail(details, "Department / Programme", resource.department, true);
 
 
             /*
@@ -5640,7 +5648,7 @@
 
                 addModalLink(
                     links,
-                    "OPEN CATALOGUE RECORD",
+                    "VIEW IN LIBRARY CATALOGUE",
                     resource.catalogueUrl
                 );
 
@@ -5650,9 +5658,7 @@
 
 
             if (
-                resource.resourceUrl &&
-                resource.resourceUrl !==
-                    resource.catalogueUrl
+                resource.resourceUrl && !resource.catalogueUrl
             ) {
 
                 addModalLink(
@@ -5721,13 +5727,25 @@
         }
 
 
+        /* "Author · 2010 · 2nd ed." : skips whatever is missing */
+        function metaLine(resource) {
+            return [resource.author, resource.year, resource.edition]
+                .filter(Boolean)
+                .join(" · ");
+        }
+
+
         function addModalDetail(
             container,
             label,
-            value
+            value,
+            hideIfEmpty
         ) {
 
             if (!value) {
+                if (hideIfEmpty) {
+                    return;
+                }
                 value = "Not provided";
             }
 

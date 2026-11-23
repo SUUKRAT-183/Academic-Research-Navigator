@@ -120,3 +120,83 @@ useful to students now, which is what gets real footfall. Use `--label "arXiv sa
 | Every book has 1 giant subject | Wrong `--subject-sep`; look at a raw cell and match its separator |
 | Very few concept chips | Subjects are sparse; try `python -m scripts.build_vocabulary --min-freq 2` |
 | Server slow to start with a big file | Startup tags every record; ~6 s per 6,000 records. Normal. |
+
+## Big catalogues (50,000 - 200,000+ records)
+The site holds the whole catalogue in memory, so the host's RAM decides how big it can be.
+Measured on realistic synthetic files (peak memory after a batch of searches):
+
+| Catalogue | Peak memory | Free Render (512 MB) |
+|---|---|---|
+| 10,000 records with abstracts | ~270 MB | comfortable |
+| 100,000 records, titles + subjects | ~345 MB | fits |
+| 160,000 records, titles + author + year only | ~340 MB | fits |
+| 160,000 records, titles + subjects + call numbers | ~450 MB | too tight, use a bigger host or a subset |
+
+Startup is a few seconds and a search takes ~10-30 ms at any of these sizes.
+Check the real number on your real file: open `/api/health` and read `memory_peak_mb`.
+
+Things that are different for big files:
+- **Concepts need subject headings.** A file with only title/author/year gives 0 concepts: the concept chips and
+  "related concepts" stay empty and search is plain TF-IDF over titles. Ask the library for subject headings.
+- **"Explore a concept" shows at most 100 resources** (the response also reports the true total).
+  Change the cap with the `ARN_EXPLORE_LIMIT` environment variable.
+- **Git file size:** GitHub warns at 50 MB and refuses files over 100 MB. `data/catalogue.json` is roughly
+  300 bytes per record, so ~330,000 records is the ceiling for a plain JSON file.
+- **Never commit library data to a public repository.** Make the repo private first (Settings -> Danger Zone).
+
+## The TIET export (the spreadsheet the professor sent)
+Columns: Accession No, Call Number, Title, Author, Co-Author(s), Language, Publisher, Place, Year, Edition,
+Pages, ISBN/ISSN, Subjects, Material Type, Biblio ID, Catalogue Link. The importer handles this layout as is:
+
+| Column | Used for |
+|---|---|
+| Title, Author + Co-Author(s) | shown on every result (co-authors are joined to the author) |
+| Subjects | concepts, related topics, ranking |
+| Material Type | type filter ("Text Book", "General Book") |
+| Year, Call Number | shown on the result card |
+| Biblio ID | the record's unique id (one per BOOK) |
+| Catalogue Link | the real "Open in catalogue" link. If every link has the same pattern it is stored once |
+| Publisher, Edition | shown in the detail panel; edition also next to the year ("Weiss, Mark · 2014 · 2nd ed.") |
+| Place, Language, Pages, ISBN/ISSN | **opt-in**: `--extra-fields place,language,pages,isbn`. Each costs ~6-10 MB of memory per 137,000 records and makes catalogue.json ~6 MB bigger, for little value to someone choosing a book |
+| Accession No | ignored on purpose (one per physical copy, not per book) |
+
+What the website shows for a library record:
+- the card: title, "author · year · edition", subjects, **VIEW IN LIBRARY →** (the Thapar catalogue page, where live
+  availability is) and *View details* (the in-site panel). The old "OPEN RESOURCE" button only appears for records
+  that have no library link, so students are never offered two competing links.
+- the detail panel: type, year, author, record number, call number, publisher, edition, subjects, and a note to check
+  live availability in the library catalogue. Fields with no value are hidden instead of saying "Not provided".
+- There is no abstract in this export, so no abstract section is shown. Search uses title, subjects and author.
+
+- **Copies:** if the sheet has one row per copy, rows with the same Biblio ID are merged into one record.
+  The import report says how many repeated ids it skipped.
+- **Subject headings** such as `JAVA (Computer program language) -- Handbooks` are reduced to `java` for the concept
+  list, so a student typing "java" gets the concept. The full heading stays on the record.
+- **Several subjects in one cell** are split on `;` and `|`. If the library uses another separator, add
+  `--subject-sep ","` (or whatever it is). Check by looking at a Subjects cell that has several subjects.
+- **Use the CSV, not the .xlsx, when you have both.** A 160,000-row CSV (~41 MB) imports in about 7 seconds; the
+  Excel version (~15 MB, compressed) takes about 40 seconds and more RAM. Either needs ~1 GB of free RAM while importing.
+  The CSV reader copes with UTF-8 (with or without BOM), Windows cp1252, `,` or `;` delimiters and line breaks inside cells.
+- Run `--show-columns` first, as always. Every line should show a column except abstract, keywords and id.
+
+## Subjects joined by spaces (the Nalanda/TIET export)
+In this export several headings share one cell with NO separator, e.g.
+`Concrete Technology Concrete Construction Concrete` (three headings) or
+`Computer programming Electronic digital computer-programming` (two). Nothing can split that automatically
+by punctuation, so the importer can LEARN the library's headings from the data instead:
+
+    python -m scripts.import_library_data "library_data\nalanda.csv" --segment-subjects --label "TIET Central Library catalogue"
+
+How it works: a heading that stands ALONE in a cell many times (like "Physics") is a real heading. Every long
+cell is then cut into the longest known headings. Words that match nothing stay together as one leftover piece, and a
+leftover that starts with a lowercase word or a dash ("and Technology - Congresses") is glued back onto the heading
+before it. Headings that are really two known headings side by side are not themselves treated as headings.
+
+Read the line it prints: `Subject splitter: learned N headings; X% of M multi-word subject cells split cleanly`.
+- 85% or more: very likely good. Check the concept list (`data\vocabulary.json`) looks like real subjects.
+- 60-85%: usable, expect some wrong or missing concepts.
+- under 60%: the importer warns you. Ask the library for an export with `;` between the subjects of each record.
+  (On test data with known answers: 95% of records were split exactly right when 30% of records carry a single
+  heading, 90% at 15%, and 76% at 5%.)
+
+Whatever you do, ask the library for the `;`-separated version too. It is always better than guessing.
